@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/monarch/monarch"
+	"github.com/go-monarch/monarch"
 )
 
 func main() {
