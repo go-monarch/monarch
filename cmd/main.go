@@ -1,46 +1,67 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/go-monarch/monarch"
+	"github.com/go-monarch/monarch/query"
+	"github.com/google/uuid"
 )
 
 func main() {
-	type User struct {
-		ID        string `monarch:"id,index"`
-		Name      string `monarch:"name"`
-		Skip      string
-		Group     []string  `monarch:"group"`
-		CreatedAt time.Time `monarch:"created_at"`
-	}
+	type Status string
+	type LastLogin int
 
 	type UserProfile struct {
-		ID    string `monarch:"id,index"`
-		Email int    `monarch:"email"`
+		ID        uuid.UUID         `monarch:"id,index"`
+		Email     string            `monarch:"email"`
+		Age       int               `monarch:"age"`
+		LastLogin LastLogin         `monarch:"last_login"`
+		Brands    []string          `monarch:"brands"`
+		Status    Status            `monarch:"status"`
+		Session   map[string]string `monarch:"session"`
+		CreatedAt time.Time         `monarch:"created_at"`
 	}
 
-	type Address struct {
-		Street string `monarch:"street"`
-	}
-
-	m, err := monarch.Connect("mongodb://localhost:27017")
-	if err != nil {
-		fmt.Println(err.Error())
-		os.Exit(2)
-	}
-
-	client := monarch.New(m)
-	client.UseDB("monarch-test")
-
-	monarch.RegisterCollection(client, User{})
-	u, err := monarch.RegisterCollection(client, UserProfile{})
+	c, err := monarch.Connect("mongodb://localhost")
 	if err != nil {
 		fmt.Println(err.Error())
 		os.Exit(1)
 	}
-	fmt.Println(u.Query().FindMany())
-	monarch.RegisterCollection(client, Address{})
+	m := monarch.New(c)
+
+	u, err := monarch.RegisterCollection(m, UserProfile{})
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+	// if err := u.Save(context.Background(), UserProfile{
+	// 	ID:        uuid.New(),
+	// 	Email:     "jon@doe.com",
+	// 	Age:       20,
+	// 	LastLogin: LastLogin(300),
+	// 	Brands:    []string{"lorem", "ipsum"},
+	// 	Session: map[string]string{
+	// 		"id": "slsdhvsdjlkdssdlj",
+	// 	},
+	// 	Status:    Status("pending"),
+	// 	CreatedAt: time.Now(),
+	// }); err != nil {
+	// 	fmt.Println(err.Error())
+	// 	os.Exit(1)
+	// }
+	d, err := u.Query(context.Background(), query.SetLimit(3)).FindMany()
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+
+	for _, a := range d {
+		fmt.Println(a)
+	}
+
+	fmt.Println(u.Query(context.Background()).FindOne())
 }

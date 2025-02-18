@@ -4,6 +4,7 @@ import (
 	"errors"
 	"go/ast"
 	"reflect"
+	"sync"
 
 	"github.com/jinzhu/inflection"
 )
@@ -16,9 +17,14 @@ type Schema struct {
 	FieldByName   map[string]*Field
 	FieldByDBName map[string]*Field
 	IndexField    map[string]*Field
+	InlineField   map[string]*Field
+
+	cacheStore *sync.Map
+	err        error
+	loaded     chan struct{}
 }
 
-func ParseSchema(obj interface{}) (*Schema, error) {
+func Parse(obj interface{}, cacheStore *sync.Map) (*Schema, error) {
 
 	if obj == nil {
 		return nil, errors.New("err: unexpected type")
@@ -42,6 +48,13 @@ func ParseSchema(obj interface{}) (*Schema, error) {
 		return nil, errors.New("")
 	}
 
+	if v, ok := cacheStore.Load(schemaType); ok {
+		s := v.(*Schema)
+
+		<-s.loaded
+		return s, s.err
+	}
+
 	schema := &Schema{
 		Name:          schemaType.Name(),
 		SchemaType:    schemaType,
@@ -50,6 +63,17 @@ func ParseSchema(obj interface{}) (*Schema, error) {
 		FieldByName:   make(map[string]*Field),
 		FieldByDBName: make(map[string]*Field),
 		IndexField:    make(map[string]*Field),
+		cacheStore:    cacheStore,
+		loaded:        make(chan struct{}),
+	}
+
+	defer close(schema.loaded)
+
+	if v, ok := cacheStore.Load(schemaType); ok {
+		s := v.(*Schema)
+
+		<-s.loaded
+		return s, s.err
 	}
 
 	for i := 0; i < schemaType.NumField(); i++ {
@@ -67,7 +91,21 @@ func ParseSchema(obj interface{}) (*Schema, error) {
 			schema.FieldByDBName[field.DBName] = field
 		}
 		schema.FieldByName[field.Name] = field
+		field.setupValuerAndSetter()
 	}
 
-	return schema, nil
+	if v, ok := cacheStore.LoadOrStore(schemaType, schema); ok {
+		s := v.(*Schema)
+
+		<-s.loaded
+		return s, s.err
+	}
+
+	defer func() {
+		if schema.err != nil {
+			cacheStore.Delete(schemaType)
+		}
+	}()
+
+	return schema, schema.err
 }
