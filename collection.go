@@ -94,14 +94,10 @@ func (c *Collection[T]) Query(ctx context.Context, queries ...query.Params) Quer
 			}
 			c.order = append(c.order, bson.E{Key: order_val.Key(), Value: val})
 		case query.QueryLimit:
-			val, ok := qq.Value().(int64)
-			if !ok {
-			}
+			val := qq.Value().(int64)
 			c.limit = val
 		case query.QueryOffset:
-			val, ok := qq.Value().(int64)
-			if !ok {
-			}
+			val := qq.Value().(int64)
 			c.offset = val
 		default:
 			panic(errors.New("unsupported"))
@@ -168,7 +164,7 @@ func (c *Collection[T]) UpdateOne(doc T) error {
 		return err
 	}
 
-	_, err = c.coll.UpdateOne(c.ctx, c.filter, val)
+	_, err = c.coll.UpdateOne(c.ctx, c.filter, bson.D{{Key: "$set", Value: val}})
 	return err
 }
 func (c *Collection[T]) UpdateMany(doc T) error {
@@ -178,7 +174,7 @@ func (c *Collection[T]) UpdateMany(doc T) error {
 		return err
 	}
 
-	_, err = c.coll.UpdateMany(c.ctx, c.filter, val)
+	_, err = c.coll.UpdateMany(c.ctx, c.filter, bson.D{{Key: "$set", Value: val}})
 
 	return err
 }

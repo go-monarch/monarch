@@ -5,7 +5,6 @@ go 1.24.0
 require (
 	github.com/google/uuid v1.6.0
 	github.com/jinzhu/inflection v1.0.0
-	github.com/jinzhu/now v1.1.5
 	go.mongodb.org/mongo-driver/v2 v2.0.0
 )
 
