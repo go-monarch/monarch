@@ -23,7 +23,11 @@ func main() {
 		Brands    []string          `monarch:"brands"`
 		Status    Status            `monarch:"status"`
 		Session   map[string]string `monarch:"session"`
-		CreatedAt time.Time         `monarch:"created_at"`
+		Skip      string            `monarch:"-"`
+		Details   struct {
+			ID string `monarch:"id"`
+		} `monarch:"details"`
+		CreatedAt time.Time `monarch:"created_at"`
 	}
 
 	c, err := monarch.Connect("mongodb://localhost")
@@ -38,21 +42,27 @@ func main() {
 		fmt.Println(err.Error())
 		os.Exit(1)
 	}
-	// if err := u.Save(context.Background(), UserProfile{
-	// 	ID:        uuid.New(),
-	// 	Email:     "jon@doe.com",
-	// 	Age:       20,
-	// 	LastLogin: LastLogin(300),
-	// 	Brands:    []string{"lorem", "ipsum"},
-	// 	Session: map[string]string{
-	// 		"id": "slsdhvsdjlkdssdlj",
-	// 	},
-	// 	Status:    Status("pending"),
-	// 	CreatedAt: time.Now(),
-	// }); err != nil {
-	// 	fmt.Println(err.Error())
-	// 	os.Exit(1)
-	// }
+	if err := u.Save(context.Background(), UserProfile{
+		ID:        uuid.New(),
+		Email:     "jon@doe.com",
+		Age:       20,
+		LastLogin: LastLogin(300),
+		Brands:    []string{"lorem", "ipsum"},
+		Session: map[string]string{
+			"id": "slsdhvsdjlkdssdlj",
+		},
+		Skip: "hello",
+		Details: struct {
+			ID string "monarch:\"id\""
+		}{
+			ID: "hello",
+		},
+		Status:    Status("pending"),
+		CreatedAt: time.Now(),
+	}); err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
 	d, err := u.Query(context.Background(), query.SetLimit(3)).FindMany()
 	if err != nil {
 		fmt.Println(err.Error())

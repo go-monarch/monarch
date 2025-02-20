@@ -23,6 +23,9 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 	var (
 		tags = ParseTagSetting(fieldStruct.Tag.Get("monarch"), ",")
 	)
+	if CheckSkip(tags) {
+		return nil
+	}
 
 	field := &Field{
 		Name:              fieldStruct.Name,
@@ -82,4 +85,7 @@ func ParseTagSetting(tag, seperator string) []string {
 }
 func CheckIndex(tag []string) bool {
 	return slices.Contains(tag, "index")
+}
+func CheckSkip(tag []string) bool {
+	return slices.Contains(tag, "-")
 }

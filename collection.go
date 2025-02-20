@@ -37,8 +37,8 @@ type Querier[T any] interface {
 	FindMany() ([]*T, error)
 	UpdateOne(doc T) error
 	UpdateMany(doc T) error
-	DeleteOne(doc T) error
-	DeleteMany(doc T) error
+	DeleteOne() error
+	DeleteMany() error
 }
 
 type Saver[T any] interface {
@@ -178,12 +178,12 @@ func (c *Collection[T]) UpdateMany(doc T) error {
 
 	return err
 }
-func (c *Collection[T]) DeleteOne(doc T) error {
+func (c *Collection[T]) DeleteOne() error {
 	defer c.reset()
 	_, err := c.coll.DeleteOne(c.ctx, c.filter)
 	return err
 }
-func (c *Collection[T]) DeleteMany(doc T) error {
+func (c *Collection[T]) DeleteMany() error {
 	defer c.reset()
 	_, err := c.coll.DeleteMany(c.ctx, c.filter)
 	return err
