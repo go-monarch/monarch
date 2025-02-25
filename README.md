@@ -20,7 +20,7 @@ go get -u github.com/go-monarch/monarch
 package main
 
 type User struct {
-    ID string `monarch`:"id,index"
+    ID string `monarch:"id,index"`
     Email string `monarch:"email"`
     Password string `monarch:"password"`
     Auto bool
