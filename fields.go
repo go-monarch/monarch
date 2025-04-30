@@ -2,10 +2,14 @@ package monarch
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 )
+
+var embeddedCacheKey = "embedded_cache_store"
 
 type Field struct {
 	Name              string
@@ -15,6 +19,7 @@ type Field struct {
 	StructField       reflect.StructField
 	IndirectFieldType reflect.Type
 	Schema            *Schema
+	EmbeddedSchema    *Schema
 	Index             bool
 	ReflectValueOf    func(ctx context.Context, val reflect.Value) reflect.Value
 }
@@ -38,8 +43,39 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 		Index:             CheckIndex(tags),
 	}
 
+	fieldValue := reflect.New(field.IndirectFieldType)
+
 	for field.IndirectFieldType.Kind() == reflect.Pointer {
 		field.IndirectFieldType = field.IndirectFieldType.Elem()
+	}
+
+	if fieldStruct.Anonymous {
+		kind := reflect.Indirect(fieldValue).Kind()
+		switch kind {
+		case reflect.Struct:
+			var err error
+
+			cacheStore := &sync.Map{}
+			cacheStore.Store(embeddedCacheKey, true)
+			if field.EmbeddedSchema, err = getOrParse(fieldValue.Interface(), cacheStore); err != nil {
+				schema.err = err
+			}
+
+			for _, ef := range field.EmbeddedSchema.Fields {
+				ef.Schema = schema
+
+				// index is negative means is pointer
+				if field.FieldType.Kind() == reflect.Struct {
+					ef.StructField.Index = append([]int{fieldStruct.Index[0]}, ef.StructField.Index...)
+				} else {
+					ef.StructField.Index = append([]int{-fieldStruct.Index[0] - 1}, ef.StructField.Index...)
+				}
+
+			}
+		case reflect.Invalid, reflect.Uintptr, reflect.Array, reflect.Chan, reflect.Func, reflect.Interface,
+			reflect.Map, reflect.Ptr, reflect.Slice, reflect.UnsafePointer, reflect.Complex64, reflect.Complex128:
+			schema.err = fmt.Errorf("invalid embedded struct for %s's field %s, should be struct, but got %v", field.Schema.Name, field.Name, field.FieldType)
+		}
 	}
 
 	return field

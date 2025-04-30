@@ -3,6 +3,7 @@ package monarch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -223,7 +224,7 @@ func (c *Collection[T]) reset() {
 	c.offset = 0
 }
 
-func (c *Collection[T]) marshal(data interface{}) (bson.D, error) {
+func (c *Collection[T]) marshal(data any) (bson.D, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 	schema, err := Parse(data, c.cacheStore)
@@ -281,97 +282,159 @@ func (c *Collection[T]) unMarshal(doc bson.D) (*T, error) {
 	}
 	r := reflect.ValueOf(&result)
 	for _, e := range doc {
-		for _, f := range s.Fields {
-			if e.Key == f.DBName {
-				switch e.Value.(type) {
-				case bson.A:
-					val := e.Value.(bson.A)
-					newVal := reflect.MakeSlice(f.FieldType, 0, 0)
+		if err := parseMongo(ctx, r, e, s.Fields, c.cacheStore); err != nil {
+			return nil, err
+		}
+	}
+
+	return &result, nil
+}
+
+func parseMongo(ctx context.Context, r reflect.Value, e bson.E, fields []*Field, c *sync.Map) error {
+
+	for _, f := range fields {
+		if e.Key == f.DBName {
+			switch e.Value.(type) {
+			case bson.A:
+				val := e.Value.(bson.A)
+				newVal := reflect.MakeSlice(f.FieldType, 0, 0)
+				switch f.FieldType.Elem().Kind() {
+				case reflect.Struct:
+					for _, v := range val {
+						t := reflect.New(f.FieldType.Elem())
+						h, err := Parse(t.Interface(), c)
+						if err != nil {
+							return err
+						}
+						for _, e := range v.(bson.D) {
+							if err := parseMongo(ctx, t.Elem(), e, h.Fields, c); err != nil {
+								return err
+							}
+						}
+
+						newVal = reflect.Append(newVal, t.Elem())
+					}
+				case reflect.Map:
+					fmt.Println("why")
+				default:
 					for _, v := range val {
 						newVal = reflect.Append(newVal, reflect.ValueOf(v))
 					}
-					f.ReflectValueOf(ctx, r).Set(newVal)
-				case bson.Binary:
-					if val, ok := e.Value.(bson.Binary); ok {
-						if val.Subtype == 4 {
-							id, err := uuid.FromBytes(val.Data)
-							if err != nil {
-								return nil, err
-							}
-							f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(id))
+				}
+
+				f.ReflectValueOf(ctx, r).Set(newVal)
+			case bson.Binary:
+				if val, ok := e.Value.(bson.Binary); ok {
+					if val.Subtype == 4 {
+						id, err := uuid.FromBytes(val.Data)
+						if err != nil {
+							return err
 						}
+						f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(id))
 					}
-				case bson.ObjectID:
-					if val, ok := e.Value.(bson.ObjectID); ok {
-						f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(val.Hex()))
-					}
-				case bson.DateTime:
-					if val, ok := e.Value.(bson.DateTime); ok {
-						f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(val.Time()))
-					}
-				case bson.D:
-					switch f.FieldType.Kind() {
-					case reflect.Map:
-						val := e.Value.(bson.D)
-						newMap := reflect.MakeMap(f.FieldType)
+				}
+			case bson.ObjectID:
+				if val, ok := e.Value.(bson.ObjectID); ok {
+					f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(val.Hex()))
+				}
+			case bson.DateTime:
+				if val, ok := e.Value.(bson.DateTime); ok {
+					f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(val.Time()))
+				}
+			case bson.D:
+				switch f.FieldType.Kind() {
+				case reflect.Map:
+					val := e.Value.(bson.D)
+					newMap := reflect.MakeMap(f.FieldType)
+					if f.FieldType.Elem().Kind() == reflect.Struct {
+						for _, v := range val {
+							t := reflect.New(f.FieldType.Elem())
+							h, err := Parse(t.Interface(), c)
+							if err != nil {
+								return err
+							}
+							if err := parseMongo(ctx, t.Elem(), v, h.Fields, c); err != nil {
+								return err
+							}
+							newMap.SetMapIndex(reflect.ValueOf(v.Key), t.Elem())
+						}
+
+					} else {
 						for _, v := range val {
 							newMap.SetMapIndex(reflect.ValueOf(v.Key), reflect.ValueOf(v.Value))
 						}
-						f.ReflectValueOf(ctx, r).Set(newMap)
-					default:
-						continue
 					}
-				case int, int8, int16, int32, int64:
-					var val int64
-					switch e.Value.(type) {
-					case int:
-						val = int64(e.Value.(int))
-					case int8:
-						val = int64(e.Value.(int8))
-					case int16:
-						val = int64(e.Value.(int16))
-					case int32:
-						val = int64(e.Value.(int32))
-					default:
-						val = int64(e.Value.(int64))
+
+					f.ReflectValueOf(ctx, r).Set(newMap)
+				case reflect.Struct:
+					t := reflect.New(f.FieldType)
+					h, err := Parse(t.Interface(), c)
+					if err != nil {
+						return err
 					}
-					f.ReflectValueOf(ctx, r).SetInt(val)
-				case uint, uint8, uint16, uint32, uint64:
-					var val uint64
-					switch e.Value.(type) {
-					case uint:
-						val = uint64(e.Value.(uint))
-					case uint8:
-						val = uint64(e.Value.(uint8))
-					case uint16:
-						val = uint64(e.Value.(uint16))
-					case uint32:
-						val = uint64(e.Value.(uint32))
-					default:
-						val = uint64(e.Value.(uint64))
+					val, ok := e.Value.(bson.D)
+					if !ok {
+						return errors.New("not bson type")
 					}
-					f.ReflectValueOf(ctx, r).SetUint(val)
-				case float32, float64:
-					var val float64
-					switch e.Value.(type) {
-					case uint:
-						val = float64(e.Value.(float32))
-					default:
-						val = float64(e.Value.(float64))
+					for _, v := range val {
+						if err := parseMongo(ctx, t.Elem(), v, h.Fields, c); err != nil {
+							return err
+						}
 					}
-					f.ReflectValueOf(ctx, r).SetFloat(val)
-				case bool:
-					val := e.Value.(bool)
-					f.ReflectValueOf(ctx, r).SetBool(val)
-				case string:
-					val := e.Value.(string)
-					f.ReflectValueOf(ctx, r).SetString(val)
+
+					f.ReflectValueOf(ctx, r).Set(t.Elem())
 				default:
-					f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(e.Value))
+					continue
 				}
+			case int, int8, int16, int32, int64:
+				var val int64
+				switch e.Value.(type) {
+				case int:
+					val = int64(e.Value.(int))
+				case int8:
+					val = int64(e.Value.(int8))
+				case int16:
+					val = int64(e.Value.(int16))
+				case int32:
+					val = int64(e.Value.(int32))
+				default:
+					val = int64(e.Value.(int64))
+				}
+				f.ReflectValueOf(ctx, r).SetInt(val)
+			case uint, uint8, uint16, uint32, uint64:
+				var val uint64
+				switch e.Value.(type) {
+				case uint:
+					val = uint64(e.Value.(uint))
+				case uint8:
+					val = uint64(e.Value.(uint8))
+				case uint16:
+					val = uint64(e.Value.(uint16))
+				case uint32:
+					val = uint64(e.Value.(uint32))
+				default:
+					val = uint64(e.Value.(uint64))
+				}
+				f.ReflectValueOf(ctx, r).SetUint(val)
+			case float32, float64:
+				var val float64
+				switch e.Value.(type) {
+				case uint:
+					val = float64(e.Value.(float32))
+				default:
+					val = float64(e.Value.(float64))
+				}
+				f.ReflectValueOf(ctx, r).SetFloat(val)
+			case bool:
+				val := e.Value.(bool)
+				f.ReflectValueOf(ctx, r).SetBool(val)
+			case string:
+				val := e.Value.(string)
+				f.ReflectValueOf(ctx, r).SetString(val)
+			default:
+				f.ReflectValueOf(ctx, r).Set(reflect.ValueOf(e.Value))
 			}
 		}
-
 	}
-	return &result, nil
+	return nil
 }

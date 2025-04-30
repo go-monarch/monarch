@@ -2,6 +2,7 @@ package monarch
 
 import (
 	"errors"
+	"fmt"
 	"go/ast"
 	"reflect"
 	"sync"
@@ -17,14 +18,13 @@ type Schema struct {
 	FieldByName   map[string]*Field
 	FieldByDBName map[string]*Field
 	IndexField    map[string]*Field
-	InlineField   map[string]*Field
 
 	cacheStore *sync.Map
 	err        error
 	loaded     chan struct{}
 }
 
-func Parse(obj interface{}, cacheStore *sync.Map) (*Schema, error) {
+func Parse(obj any, cacheStore *sync.Map) (*Schema, error) {
 
 	if obj == nil {
 		return nil, errors.New("err: unexpected type")
@@ -76,7 +76,7 @@ func Parse(obj interface{}, cacheStore *sync.Map) (*Schema, error) {
 		return s, s.err
 	}
 
-	for i := 0; i < schemaType.NumField(); i++ {
+	for i := range schemaType.NumField() {
 		if fieldStruct := schemaType.Field(i); ast.IsExported(fieldStruct.Name) {
 			if field := schema.ParseField(fieldStruct); field != nil {
 				schema.Fields = append(schema.Fields, field)
@@ -108,4 +108,24 @@ func Parse(obj interface{}, cacheStore *sync.Map) (*Schema, error) {
 	}()
 
 	return schema, schema.err
+}
+
+func getOrParse(dest interface{}, cacheStore *sync.Map) (*Schema, error) {
+	modelType := reflect.ValueOf(dest).Type()
+	for modelType.Kind() == reflect.Slice || modelType.Kind() == reflect.Array || modelType.Kind() == reflect.Ptr {
+		modelType = modelType.Elem()
+	}
+
+	if modelType.Kind() != reflect.Struct {
+		if modelType.PkgPath() == "" {
+			return nil, fmt.Errorf("%w: %+v", errors.New("unsupported data type"), dest)
+		}
+		return nil, fmt.Errorf("%w: %s.%s", errors.New("unsupported data type"), modelType.PkgPath(), modelType.Name())
+	}
+
+	if v, ok := cacheStore.Load(modelType); ok {
+		return v.(*Schema), nil
+	}
+
+	return Parse(dest, cacheStore)
 }
