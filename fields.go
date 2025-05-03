@@ -24,9 +24,9 @@ type Field struct {
 	ReflectValueOf    func(ctx context.Context, val reflect.Value) reflect.Value
 }
 
-func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
+func (schema *Schema) parseField(fieldStruct reflect.StructField) *Field {
 	var (
-		tags = ParseTagSetting(fieldStruct.Tag.Get("monarch"), ",")
+		tags = parseTagSetting(fieldStruct.Tag.Get("monarch"), ",")
 	)
 	if CheckSkip(tags) {
 		return nil
@@ -54,7 +54,6 @@ func (schema *Schema) ParseField(fieldStruct reflect.StructField) *Field {
 		switch kind {
 		case reflect.Struct:
 			var err error
-
 			cacheStore := &sync.Map{}
 			cacheStore.Store(embeddedCacheKey, true)
 			if field.EmbeddedSchema, err = getOrParse(fieldValue.Interface(), cacheStore); err != nil {
@@ -116,7 +115,7 @@ func (field *Field) setupValuerAndSetter() {
 	}
 }
 
-func ParseTagSetting(tag, seperator string) []string {
+func parseTagSetting(tag, seperator string) []string {
 	return strings.Split(tag, seperator)
 }
 func CheckIndex(tag []string) bool {

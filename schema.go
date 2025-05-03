@@ -24,7 +24,7 @@ type Schema struct {
 	loaded     chan struct{}
 }
 
-func Parse(obj any, cacheStore *sync.Map) (*Schema, error) {
+func parse(obj any, cacheStore *sync.Map) (*Schema, error) {
 
 	if obj == nil {
 		return nil, errors.New("err: unexpected type")
@@ -78,7 +78,9 @@ func Parse(obj any, cacheStore *sync.Map) (*Schema, error) {
 
 	for i := range schemaType.NumField() {
 		if fieldStruct := schemaType.Field(i); ast.IsExported(fieldStruct.Name) {
-			if field := schema.ParseField(fieldStruct); field != nil {
+			if field := schema.parseField(fieldStruct); field.EmbeddedSchema != nil {
+				schema.Fields = append(schema.Fields, field.EmbeddedSchema.Fields...)
+			} else {
 				schema.Fields = append(schema.Fields, field)
 			}
 		}
@@ -127,5 +129,5 @@ func getOrParse(dest interface{}, cacheStore *sync.Map) (*Schema, error) {
 		return v.(*Schema), nil
 	}
 
-	return Parse(dest, cacheStore)
+	return parse(dest, cacheStore)
 }

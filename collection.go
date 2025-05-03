@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/go-monarch/monarch/query"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -19,35 +17,23 @@ import (
 type Collection[T any] struct {
 	coll       *mongo.Collection
 	cacheStore *sync.Map
-	ctx        context.Context
-	limit      int64
-	offset     int64
-	filter     bson.D
-	order      bson.D
 	Model[T]
 }
 
 type Model[T any] interface {
-	Query(ctx context.Context, query ...query.Params) Querier[T]
 	ExecRaw(ctx context.Context, f func(coll *Collection[T]) error) (*T, error)
-	Saver[T]
-}
-
-type Querier[T any] interface {
-	FindOne() (*T, error)
-	FindMany() ([]*T, error)
-	UpdateOne(doc T) error
-	UpdateMany(doc T) error
-	DeleteOne() error
-	DeleteMany() error
-}
-
-type Saver[T any] interface {
-	Save(ctx context.Context, doc T) error
+	CreateIndex(ctx context.Context) error
+	FindOne(ctx context.Context, query ...QueryOptions) (*T, error)
+	FindMany(ctx context.Context, query ...QueryOptions) ([]*T, error)
+	UpdateOne(ctx context.Context, query ...QueryOptions) error
+	UpdateMany(ctx context.Context, query ...QueryOptions) error
+	DeleteOne(ctx context.Context, query ...QueryOptions) error
+	DeleteMany(ctx context.Context, query ...QueryOptions) error
+	Save(ctx context.Context, query ...QueryOptions) error
 }
 
 func RegisterCollection[T any](m *Monarch, schema T) (*Collection[T], error) {
-	s, err := Parse(schema, m.cacheStore)
+	s, err := parse(schema, m.cacheStore)
 	if err != nil {
 		return nil, err
 	}
@@ -61,54 +47,17 @@ func RegisterCollection[T any](m *Monarch, schema T) (*Collection[T], error) {
 	return c, nil
 }
 
-func (c *Collection[T]) Query(ctx context.Context, queries ...query.Params) Querier[T] {
-	c.ctx = ctx
-	c.filter = bson.D{}
-	c.order = bson.D{}
-	var q_params []query.QueryStruct
-
-	for _, param := range queries {
-		q_params = append(q_params, param())
-	}
-
-	for _, qq := range q_params {
-		switch qq.Key() {
-		case query.QueryFilter:
-			val, ok := qq.Value().(query.FilterStruct)
-			if !ok {
-				panic(errors.New("unsupported"))
-			}
-			c.filter = append(c.filter, bson.E{Key: val.Key(), Value: val.Value()})
-		case query.QuerySort:
-			var val int
-			order_val, ok := qq.Value().(query.OrderStruct)
-			if !ok {
-				panic(errors.New("unsupported"))
-			}
-			switch order_val.Value() {
-			case query.ASC:
-				val = -1
-			case query.DESC:
-				val = 1
-			default:
-				panic(errors.New("unsupported"))
-			}
-			c.order = append(c.order, bson.E{Key: order_val.Key(), Value: val})
-		case query.QueryLimit:
-			val := qq.Value().(int64)
-			c.limit = val
-		case query.QueryOffset:
-			val := qq.Value().(int64)
-			c.offset = val
-		default:
-			panic(errors.New("unsupported"))
+func (c *Collection[T]) Save(ctx context.Context, query ...QueryOptions) error {
+	cfg := &querier{}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return err
 		}
 	}
-	return c
-}
-
-func (c *Collection[T]) Save(ctx context.Context, doc T) error {
-	val, err := c.marshal(doc)
+	if _, ok := cfg.data.(T); !ok {
+		return errors.New("invalid type provided")
+	}
+	val, err := c.marshal(ctx, cfg.data)
 	if err != nil {
 		return err
 	}
@@ -118,10 +67,18 @@ func (c *Collection[T]) Save(ctx context.Context, doc T) error {
 	return nil
 }
 
-func (c *Collection[T]) FindOne() (*T, error) {
-	defer c.reset()
+func (c *Collection[T]) FindOne(ctx context.Context, query ...QueryOptions) (*T, error) {
+	cfg := &querier{
+		filter: make(bson.D, 0),
+	}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return nil, err
+		}
+	}
+
 	var single bson.D
-	if err := c.coll.FindOne(c.ctx, c.filter).Decode(&single); err != nil {
+	if err := c.coll.FindOne(ctx, cfg.filter).Decode(&single); err != nil {
 		return nil, err
 	}
 	res, err := c.unMarshal(single)
@@ -131,18 +88,29 @@ func (c *Collection[T]) FindOne() (*T, error) {
 	return res, nil
 }
 
-func (c *Collection[T]) FindMany() ([]*T, error) {
-	defer c.reset()
+func (c *Collection[T]) FindMany(ctx context.Context, query ...QueryOptions) ([]*T, error) {
+	cfg := &querier{
+		filter: make(bson.D, 0),
+		order:  make(bson.D, 0),
+		limit:  0,
+		offset: 0,
+	}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return nil, err
+		}
+	}
+
 	var findResult []*T
-	result, err := c.coll.Find(c.ctx, c.filter, options.Find().SetLimit(c.limit).
-		SetSkip(c.offset).SetSort(c.order))
+	result, err := c.coll.Find(ctx, cfg.filter, options.Find().SetLimit(cfg.limit).
+		SetSkip(cfg.offset).SetSort(cfg.order))
 	if err != nil {
 		return nil, err
 	}
 
-	defer result.Close(c.ctx)
+	defer result.Close(ctx)
 
-	for result.Next(c.ctx) {
+	for result.Next(ctx) {
 		var res bson.D
 
 		if err := result.Decode(&res); err != nil {
@@ -158,35 +126,78 @@ func (c *Collection[T]) FindMany() ([]*T, error) {
 	return findResult, nil
 }
 
-func (c *Collection[T]) UpdateOne(doc T) error {
-	defer c.reset()
-	val, err := c.marshal(doc)
+func (c *Collection[T]) UpdateOne(ctx context.Context, query ...QueryOptions) error {
+	cfg := &querier{
+		filter: make(bson.D, 0),
+		order:  make(bson.D, 0),
+		limit:  0,
+		offset: 0,
+	}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return err
+		}
+	}
+	val, err := c.marshal(ctx, cfg.data)
 	if err != nil {
 		return err
 	}
 
-	_, err = c.coll.UpdateOne(c.ctx, c.filter, bson.D{{Key: "$set", Value: val}})
+	_, err = c.coll.UpdateOne(ctx, cfg.filter, bson.D{{Key: "$set", Value: val}})
 	return err
 }
-func (c *Collection[T]) UpdateMany(doc T) error {
-	defer c.reset()
-	val, err := c.marshal(doc)
+func (c *Collection[T]) UpdateMany(ctx context.Context, query ...QueryOptions) error {
+	cfg := &querier{
+		filter: make(bson.D, 0),
+		order:  make(bson.D, 0),
+		limit:  0,
+		offset: 0,
+	}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return err
+		}
+	}
+	if cfg.data == nil {
+		return errors.New("no file provided")
+	}
+	val, err := c.marshal(ctx, cfg.data)
 	if err != nil {
 		return err
 	}
 
-	_, err = c.coll.UpdateMany(c.ctx, c.filter, bson.D{{Key: "$set", Value: val}})
+	_, err = c.coll.UpdateMany(ctx, cfg.filter, bson.D{{Key: "$set", Value: val}})
 
 	return err
 }
-func (c *Collection[T]) DeleteOne() error {
-	defer c.reset()
-	_, err := c.coll.DeleteOne(c.ctx, c.filter)
+func (c *Collection[T]) DeleteOne(ctx context.Context, query ...QueryOptions) error {
+	cfg := &querier{
+		filter: make(bson.D, 0),
+		order:  make(bson.D, 0),
+		limit:  0,
+		offset: 0,
+	}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return err
+		}
+	}
+	_, err := c.coll.DeleteOne(ctx, cfg.filter)
 	return err
 }
-func (c *Collection[T]) DeleteMany() error {
-	defer c.reset()
-	_, err := c.coll.DeleteMany(c.ctx, c.filter)
+func (c *Collection[T]) DeleteMany(ctx context.Context, query ...QueryOptions) error {
+	cfg := &querier{
+		filter: make(bson.D, 0),
+		order:  make(bson.D, 0),
+		limit:  0,
+		offset: 0,
+	}
+	for _, q := range query {
+		if err := q(cfg); err != nil {
+			return err
+		}
+	}
+	_, err := c.coll.DeleteMany(ctx, cfg.filter)
 	return err
 }
 
@@ -216,18 +227,8 @@ func registerIndexes(coll *mongo.Collection, fields []*Field) error {
 	return nil
 }
 
-func (c *Collection[T]) reset() {
-	c.ctx = context.Background()
-	c.filter = bson.D{}
-	c.order = bson.D{}
-	c.limit = 0
-	c.offset = 0
-}
-
-func (c *Collection[T]) marshal(data any) (bson.D, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-	schema, err := Parse(data, c.cacheStore)
+func (c *Collection[T]) marshal(ctx context.Context, data any) (bson.D, error) {
+	schema, err := parse(data, c.cacheStore)
 	if err != nil {
 		return nil, err
 	}
@@ -235,14 +236,66 @@ func (c *Collection[T]) marshal(data any) (bson.D, error) {
 	value := reflect.ValueOf(data)
 	for _, f := range schema.Fields {
 		v := f.ReflectValueOf(ctx, value)
-		fdata, err := c.encodeValue(v)
-		if err != nil {
-			return nil, err
+
+		switch f.FieldType.Kind() {
+		case reflect.Struct:
+			switch v.Interface().(type) {
+			case time.Time, *time.Time:
+				fdata, err := c.encodeValue(v)
+				if err != nil {
+					return nil, err
+				}
+				doc = append(doc, bson.E{Key: f.DBName, Value: fdata})
+			default:
+				fdata, err := c.marshal(ctx, v.Interface())
+				if err != nil {
+					return nil, err
+				}
+				doc = append(doc, bson.E{Key: f.DBName, Value: fdata})
+			}
+		case reflect.Slice, reflect.Array:
+			switch v.Type().Elem().Kind() {
+			case reflect.Struct:
+				var arr bson.A
+				for i := range v.Len() {
+					elem := v.Index(i)
+					var fdata interface{}
+					switch elem.Interface().(type) {
+					case time.Time, *time.Time:
+						fdata, err = c.encodeValue(elem)
+						if err != nil {
+							return nil, err
+						}
+					default:
+						fdata, err = c.marshal(ctx, elem.Interface())
+						if err != nil {
+							return nil, err
+						}
+					}
+					arr = append(arr, fdata)
+				}
+				doc = append(doc, bson.E{Key: f.DBName, Value: arr})
+			default:
+				fdata, err := c.encodeValue(v)
+				if err != nil {
+					return nil, err
+				}
+				doc = append(doc, bson.E{Key: f.DBName, Value: fdata})
+			}
+		case reflect.Map:
+			fdata, err := c.encodeValue(v)
+			if err != nil {
+				return nil, err
+			}
+			doc = append(doc, bson.E{Key: f.DBName, Value: fdata})
+		default:
+			fdata, err := c.encodeValue(v)
+			if err != nil {
+				return nil, err
+			}
+			doc = append(doc, bson.E{Key: f.DBName, Value: fdata})
 		}
-		if f.DBName == "" {
-			f.DBName = strings.ToLower(f.Name)
-		}
-		doc = append(doc, bson.E{Key: f.DBName, Value: fdata})
+
 	}
 
 	return doc, nil
@@ -276,13 +329,13 @@ func (c *Collection[T]) unMarshal(doc bson.D) (*T, error) {
 	defer cancel()
 
 	var result T
-	s, err := Parse(result, c.cacheStore)
+	s, err := parse(result, c.cacheStore)
 	if err != nil {
 		return nil, err
 	}
 	r := reflect.ValueOf(&result)
 	for _, e := range doc {
-		if err := parseMongo(ctx, r, e, s.Fields, c.cacheStore); err != nil {
+		if err := decodeValue(ctx, r, e, s.Fields, c.cacheStore); err != nil {
 			return nil, err
 		}
 	}
@@ -290,8 +343,7 @@ func (c *Collection[T]) unMarshal(doc bson.D) (*T, error) {
 	return &result, nil
 }
 
-func parseMongo(ctx context.Context, r reflect.Value, e bson.E, fields []*Field, c *sync.Map) error {
-
+func decodeValue(ctx context.Context, r reflect.Value, e bson.E, fields []*Field, c *sync.Map) error {
 	for _, f := range fields {
 		if e.Key == f.DBName {
 			switch e.Value.(type) {
@@ -302,16 +354,22 @@ func parseMongo(ctx context.Context, r reflect.Value, e bson.E, fields []*Field,
 				case reflect.Struct:
 					for _, v := range val {
 						t := reflect.New(f.FieldType.Elem())
-						h, err := Parse(t.Interface(), c)
+						h, err := parse(t.Interface(), c)
 						if err != nil {
 							return err
 						}
-						for _, e := range v.(bson.D) {
-							if err := parseMongo(ctx, t.Elem(), e, h.Fields, c); err != nil {
+						switch v := v.(type) {
+						case bson.D:
+							for _, e := range v {
+								if err := decodeValue(ctx, t.Elem(), e, h.Fields, c); err != nil {
+									return err
+								}
+							}
+						default:
+							if err := decodeValue(ctx, t.Elem(), e, h.Fields, c); err != nil {
 								return err
 							}
 						}
-
 						newVal = reflect.Append(newVal, t.Elem())
 					}
 				case reflect.Map:
@@ -349,11 +407,11 @@ func parseMongo(ctx context.Context, r reflect.Value, e bson.E, fields []*Field,
 					if f.FieldType.Elem().Kind() == reflect.Struct {
 						for _, v := range val {
 							t := reflect.New(f.FieldType.Elem())
-							h, err := Parse(t.Interface(), c)
+							h, err := parse(t.Interface(), c)
 							if err != nil {
 								return err
 							}
-							if err := parseMongo(ctx, t.Elem(), v, h.Fields, c); err != nil {
+							if err := decodeValue(ctx, t.Elem(), v, h.Fields, c); err != nil {
 								return err
 							}
 							newMap.SetMapIndex(reflect.ValueOf(v.Key), t.Elem())
@@ -368,7 +426,7 @@ func parseMongo(ctx context.Context, r reflect.Value, e bson.E, fields []*Field,
 					f.ReflectValueOf(ctx, r).Set(newMap)
 				case reflect.Struct:
 					t := reflect.New(f.FieldType)
-					h, err := Parse(t.Interface(), c)
+					h, err := parse(t.Interface(), c)
 					if err != nil {
 						return err
 					}
@@ -377,7 +435,7 @@ func parseMongo(ctx context.Context, r reflect.Value, e bson.E, fields []*Field,
 						return errors.New("not bson type")
 					}
 					for _, v := range val {
-						if err := parseMongo(ctx, t.Elem(), v, h.Fields, c); err != nil {
+						if err := decodeValue(ctx, t.Elem(), v, h.Fields, c); err != nil {
 							return err
 						}
 					}
