@@ -18,7 +18,6 @@ type querier struct {
 	offset int64
 	filter bson.D
 	order  bson.D
-	data   any
 }
 
 type QueryOptions func(q *querier) error
@@ -110,13 +109,6 @@ func Limit(limit int64) QueryOptions {
 func Skip(skip int64) QueryOptions {
 	return func(q *querier) error {
 		q.offset = skip
-		return nil
-	}
-}
-
-func Data(data any) QueryOptions {
-	return func(q *querier) error {
-		q.data = data
 		return nil
 	}
 }

@@ -25,11 +25,11 @@ type Model[T any] interface {
 	CreateIndex(ctx context.Context) error
 	FindOne(ctx context.Context, query ...QueryOptions) (*T, error)
 	FindMany(ctx context.Context, query ...QueryOptions) ([]*T, error)
-	UpdateOne(ctx context.Context, query ...QueryOptions) error
-	UpdateMany(ctx context.Context, query ...QueryOptions) error
+	UpdateOne(ctx context.Context, data T, query ...QueryOptions) error
+	UpdateMany(ctx context.Context, data T, query ...QueryOptions) error
 	DeleteOne(ctx context.Context, query ...QueryOptions) error
 	DeleteMany(ctx context.Context, query ...QueryOptions) error
-	Save(ctx context.Context, query ...QueryOptions) error
+	Save(ctx context.Context, data T) error
 }
 
 func RegisterCollection[T any](m *Monarch, schema T) (*Collection[T], error) {
@@ -47,17 +47,9 @@ func RegisterCollection[T any](m *Monarch, schema T) (*Collection[T], error) {
 	return c, nil
 }
 
-func (c *Collection[T]) Save(ctx context.Context, query ...QueryOptions) error {
-	cfg := &querier{}
-	for _, q := range query {
-		if err := q(cfg); err != nil {
-			return err
-		}
-	}
-	if _, ok := cfg.data.(T); !ok {
-		return errors.New("invalid type provided")
-	}
-	val, err := c.marshal(ctx, cfg.data)
+func (c *Collection[T]) Save(ctx context.Context, data T) error {
+
+	val, err := c.marshal(ctx, data)
 	if err != nil {
 		return err
 	}
@@ -126,7 +118,7 @@ func (c *Collection[T]) FindMany(ctx context.Context, query ...QueryOptions) ([]
 	return findResult, nil
 }
 
-func (c *Collection[T]) UpdateOne(ctx context.Context, query ...QueryOptions) error {
+func (c *Collection[T]) UpdateOne(ctx context.Context, data T, query ...QueryOptions) error {
 	cfg := &querier{
 		filter: make(bson.D, 0),
 		order:  make(bson.D, 0),
@@ -138,7 +130,7 @@ func (c *Collection[T]) UpdateOne(ctx context.Context, query ...QueryOptions) er
 			return err
 		}
 	}
-	val, err := c.marshal(ctx, cfg.data)
+	val, err := c.marshal(ctx, data)
 	if err != nil {
 		return err
 	}
@@ -146,7 +138,7 @@ func (c *Collection[T]) UpdateOne(ctx context.Context, query ...QueryOptions) er
 	_, err = c.coll.UpdateOne(ctx, cfg.filter, bson.D{{Key: "$set", Value: val}})
 	return err
 }
-func (c *Collection[T]) UpdateMany(ctx context.Context, query ...QueryOptions) error {
+func (c *Collection[T]) UpdateMany(ctx context.Context, data T, query ...QueryOptions) error {
 	cfg := &querier{
 		filter: make(bson.D, 0),
 		order:  make(bson.D, 0),
@@ -158,10 +150,8 @@ func (c *Collection[T]) UpdateMany(ctx context.Context, query ...QueryOptions) e
 			return err
 		}
 	}
-	if cfg.data == nil {
-		return errors.New("no file provided")
-	}
-	val, err := c.marshal(ctx, cfg.data)
+
+	val, err := c.marshal(ctx, data)
 	if err != nil {
 		return err
 	}
